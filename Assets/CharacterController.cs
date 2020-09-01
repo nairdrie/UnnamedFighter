@@ -10,13 +10,16 @@ enum PLAYER_STATE {
     DASH,
     SLIDE,
     AIRBORNE,
-    JUMPLESS
+    JUMPLESS,
+    LEDGEGRAB
 }
 
 public class CharacterController : MonoBehaviour
 {
     private bool isMortal;
     private int immortalTimer;
+    private float jumpPressedTime;
+    
     private PLAYER_STATE playerState;
     private PLAYER_STATE prevPlayerState;
 
@@ -24,6 +27,13 @@ public class CharacterController : MonoBehaviour
     private float oldOldMovementInput;
     private float movementInput;
     private float dashTime;
+    private bool isNearLedge;
+
+    private GameObject stage;
+    private PolygonCollider2D stageCollider;
+
+
+
 
     public float acceleration;
     public float moveSpeed;
@@ -32,17 +42,22 @@ public class CharacterController : MonoBehaviour
     public float maxDashTime;
     public float jumpForce;
     public float airJumpForce;
+    public float shortJumpForce;
+    public float shortAirJumpForce;
     public float spawnHeight;
+    public float fullJumpTime;
     
 
 
     // COMPONENTS
     private Rigidbody2D rigidbody;
     private SpriteRenderer spriteRenderer;
+    private BoxCollider2D collider;
 
     void Awake() {
         this.rigidbody = GetComponent<Rigidbody2D>();
         this.spriteRenderer = GetComponent<SpriteRenderer>();
+        this.collider = GetComponent<BoxCollider2D>();
 
         this.immortalTimer = 0;
     }
@@ -50,6 +65,9 @@ public class CharacterController : MonoBehaviour
     // Start is called before the first frame update
     void Start()
     {
+        this.stage = GameObject.Find("Stage");
+        this.stageCollider = this.stage.GetComponent<PolygonCollider2D>();
+
         Respawn();
     }
 
@@ -60,28 +78,42 @@ public class CharacterController : MonoBehaviour
 
         CalculateState();
 
-        HandleMotion();
+        //HandleMotion();
         
         UpdateVisuals();
 
     }
 
+    void LateUpdate() {
+        HandleMotion();
+    }
+
     void HandleControls() {
         if(CrossPlatformInputManager.GetButtonDown("Jump")) {
+            this.jumpPressedTime = Time.time;
             if(this.playerState == PLAYER_STATE.AIRBORNE) {
                 Debug.Log("AIR JUMP");
-                this.rigidbody.velocity = Vector2.up * this.airJumpForce;
                 this.playerState = PLAYER_STATE.JUMPLESS;
             } 
             else if(this.playerState != PLAYER_STATE.JUMPLESS) {
                 Debug.Log("GROUND JUMP");
                 this.prevPlayerState = this.playerState;
-                this.rigidbody.velocity = Vector2.up * this.jumpForce;
+                this.playerState = PLAYER_STATE.AIRBORNE;
             }
             else {
                 Debug.Log("JUMPLESS");
             }
                 
+        }
+        if(CrossPlatformInputManager.GetButton("Jump")) {
+            if(this.jumpPressedTime + this.fullJumpTime >= Time.time) {
+                if(this.playerState == PLAYER_STATE.AIRBORNE) {
+                    this.rigidbody.velocity = Vector2.up * this.jumpForce;
+                } 
+                else if(this.playerState == PLAYER_STATE.JUMPLESS) {
+                    this.rigidbody.velocity = Vector2.up * this.airJumpForce;
+                }
+            }
         }
 
         this.oldOldMovementInput = this.oldMovementInput;
@@ -96,9 +128,13 @@ public class CharacterController : MonoBehaviour
 
     void CalculateState() {
 
+        Debug.Log(this.playerState);
         //TODO: IF STATE IS SLIDE, DONT CHANGE IT UNTIL DONE SLIDING
 
-        if(this.playerState == PLAYER_STATE.AIRBORNE || this.playerState == PLAYER_STATE.JUMPLESS) {
+        if(this.playerState == PLAYER_STATE.AIRBORNE 
+        || this.playerState == PLAYER_STATE.JUMPLESS 
+        || this.playerState == PLAYER_STATE.SPAWNED 
+        || this.playerState == PLAYER_STATE.LEDGEGRAB) {
             return;
         }
 
@@ -144,6 +180,14 @@ public class CharacterController : MonoBehaviour
 
     void HandleMotion() {
 
+        //Check for ledge grab
+        if(GetBottom() < GetStageTop() && this.isNearLedge && this.playerState != PLAYER_STATE.LEDGEGRAB) {
+            GrabLedge();
+        }
+
+
+
+
         Vector2 translation;
 
         switch(this.playerState) {
@@ -165,6 +209,9 @@ public class CharacterController : MonoBehaviour
                 else {
                     translation = Vector2.right * Time.deltaTime * this.movementInput * this.moveSpeed;
                 }
+                break;
+            case PLAYER_STATE.LEDGEGRAB:
+                translation = Vector2.zero;
                 break;
             default:
                 translation = Vector2.right * Time.deltaTime * this.movementInput * this.moveSpeed;
@@ -200,11 +247,22 @@ public class CharacterController : MonoBehaviour
     
     }
 
+    void OnTriggerEnter2D(Collider2D col) {
+        if(col.tag == "Ledge") {
+            this.isNearLedge = true;
+        }
+    }
+
     void OnTriggerExit2D(Collider2D col) {
         if(col.tag == "Stage Boundary") {
             Die();
         }
+
+        if(col.tag == "Ledge") {
+            this.isNearLedge = false;
+        }
     }
+
 
     void Die() {
         // DEATH STUFF
@@ -232,22 +290,73 @@ public class CharacterController : MonoBehaviour
         this.rigidbody.bodyType = RigidbodyType2D.Dynamic;
     }
 
-    void UpdateVisuals() {
-        if(this.isMortal) {
-            this.immortalTimer = 0;
-            Color tmp = this.spriteRenderer.color;
-            tmp.a = 255;
-            this.spriteRenderer.color = tmp;
+    void GrabLedge() {
+        this.playerState = PLAYER_STATE.LEDGEGRAB;
+        this.isMortal = false;
+        this.immortalTimer = 0;
+        this.rigidbody.bodyType = RigidbodyType2D.Kinematic;
+        this.rigidbody.velocity = Vector2.zero;
+        Invoke("BecomeMortal", 5);
+
+        if(transform.position.x < 0) {
+            //grab left ledge
+            transform.position = new Vector3(GetStageLeft() - GetWidth()/2, GetStageTop() - GetHeight()/2, 0);
 
         }
         else {
+            //grab right ledge
+            transform.position = new Vector3(GetStageRight() + GetWidth()/2, GetStageTop() - GetHeight()/2, 0);
+        }
+    }
 
-            this.spriteRenderer.color = new Color(255,52,52, 128 * (0.5f * (Mathf.Cos(immortalTimer) + 1)) + 128);
+    void UpdateVisuals() {
+        if(this.isMortal) {
+            this.immortalTimer = 0;
+            this.spriteRenderer.color = new Color(1,52/255,52/255,1);
+
+        }
+        else {
+            this.spriteRenderer.color = new Color(1,52/255, 52/255, 0.25f * Mathf.Cos(immortalTimer/4) + 0.75f);
             this.immortalTimer++;
         }
 
     }
 
+
+
+
+
+
+    float GetBottom() {
+        return transform.position.y - GetHeight()/2;
+    }
+    float GetTop() {
+        return transform.position.y + GetHeight()/2;
+    }
+
+    float GetStageTop() {
+        return this.stage.transform.position.y + this.stageCollider.bounds.size.y/2;
+    }
+
+    float GetStageBottom() {
+        return this.stage.transform.position.y - this.stageCollider.bounds.size.y/2;
+    }
+
+    float GetStageLeft() {
+        return this.stage.transform.position.x - this.stageCollider.bounds.size.x/2;
+    }
+
+    float GetStageRight() {
+        return this.stage.transform.position.x + this.stageCollider.bounds.size.x/2;
+    }
+
+    float GetWidth() {
+        return this.collider.bounds.size.x;
+    }
+
+    float GetHeight() {
+        return this.collider.bounds.size.y;
+    }
 
     
 }
